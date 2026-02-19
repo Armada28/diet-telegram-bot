@@ -71,7 +71,7 @@ async def reg_goal(message: types.Message, state: FSMContext):
         await message.answer(f"Отлично, {data['name']}! Цель {goal} ккал установлена.", reply_markup=main_kb())
         await state.clear()
     except ValueError:
-        awaitPORT", 8080)))
+        "awaitPORT", 8080)))
 
 if __name__ == "__main__":
     main()
