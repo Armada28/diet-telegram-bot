@@ -106,8 +106,7 @@ async def main():
     print("Бот запускается...")
     await init_db()
     await bot.delete_webhook(drop_pending_updates=True)  # чистим старые вебхуки, если были
-    await dp.start_polling(bot, allowed_updates=types.AllUpdateTypes())
-
+    
 if __name__ == "__main__":
     asyncio.run(main())
 
