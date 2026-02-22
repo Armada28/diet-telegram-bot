@@ -7,7 +7,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-# Токен берём из переменных окружения (Railway → Variables)
 TOKEN = os.getenv("BOT_TOKEN")
 
 if not TOKEN:
@@ -19,7 +18,6 @@ DB_NAME = "bju_bot.db"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# ─── СОСТОЯНИЯ (FSM) ───
 class Reg(StatesGroup):
     name = State()
     goal = State()
@@ -27,7 +25,6 @@ class Reg(StatesGroup):
 class Food(StatesGroup):
     waiting_for_calories = State()
 
-# ─── ГЛАВНАЯ КЛАВИАТУРА ───
 def main_kb():
     kb = [
         [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="🍎 Быстрый перекус")],
@@ -35,7 +32,6 @@ def main_kb():
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, one_time_keyboard=False)
 
-# ─── ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ───
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute('''
@@ -54,7 +50,6 @@ async def init_db():
         ''')
         await db.commit()
 
-# ─── ОБРАБОТЧИКИ ───
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -101,7 +96,50 @@ async def reg_goal(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("Пожалуйста, введи число (можно с точкой или запятой).\nПример: 2100")
 
-# ─── ЗАПУСК БОТА (polling) ───
+# ────────────────────────────────────────────────
+# САМЫЙ ВАЖНЫЙ НОВЫЙ БЛОК — обработка обычного текста
+# ────────────────────────────────────────────────
+@dp.message()
+async def handle_food_input(message: types.Message, state: FSMContext):
+    # Пропускаем, если пользователь всё ещё в состоянии регистрации
+    if await state.get_state():
+        return
+
+    text = message.text.lower().strip()
+    parts = text.split(maxsplit=1)
+
+    if len(parts) < 2:
+        await message.reply("Формат: продукт количество\nПример: гречка 100")
+        return
+
+    product = parts[0]
+    try:
+        amount = float(parts[1])
+    except ValueError:
+        await message.reply("Количество должно быть числом")
+        return
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT kcal FROM products WHERE product_name = ?",
+            (product,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                kcal_per_100 = row[0]
+                total_kcal = (kcal_per_100 / 100) * amount
+
+                await db.execute(
+                    "UPDATE users SET eaten = eaten + ? WHERE id = ?",
+                    (total_kcal, message.from_user.id)
+                )
+                await db.commit()
+
+                await message.reply(f"Добавлено {total_kcal:.1f} ккал от {product} ({amount} г)")
+            else:
+                await message.reply(f"Продукт '{product}' не найден в базе.")
+
+# ─── ЗАПУСК ───
 async def main():
     print("Бот запускается...")
     await init_db()
