@@ -109,6 +109,54 @@ async def start(message: types.Message, state: FSMContext):
         logger.error(f"Ошибка в /start: {e}")
         await message.answer("Произошла ошибка. Попробуй позже.")
 
+@dp.message(Reg.name)
+async def reg_name(message: types.Message, state: FSMContext):
+    name = message.text.strip()
+    if not name:
+        await message.answer("Имя не может быть пустым. Попробуй ещё раз.")
+        return
+    
+    await state.update_data(name=name)
+    await message.answer(
+        f"Отлично, {name}! Теперь укажи свою дневную норму калорий.\n"
+        "Пример: 2200 или 1850.5"
+    )
+    await state.set_state(Reg.goal)
+
+@dp.message(Reg.goal)
+async def reg_goal(message: types.Message, state: FSMContext):
+    text = message.text.replace(',', '.').strip()
+    try:
+        goal = float(text)
+        if goal <= 0:
+            raise ValueError("Норма должна быть больше 0")
+    except ValueError:
+        await message.answer("Пожалуйста, введи нормальное число (можно с точкой).\nПример: 2100")
+        return
+    
+    data = await state.get_data()
+    name = data.get('name', 'Пользователь')
+    
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO users (id, name, goal, eaten) VALUES (?, ?, ?, 0)",
+                (message.from_user.id, name, goal)
+            )
+            await db.commit()
+        
+        await message.answer(
+            f"Готово, {name}! Твоя цель — {goal} ккал в день.\n"
+            "Теперь можешь добавлять еду в формате: продукт количество\n"
+            "Пример: гречка 100",
+            reply_markup=main_kb()
+        )
+        await state.clear()
+    
+    except Exception as e:
+        logger.error(f"Ошибка сохранения пользователя: {e}")
+        await message.answer("Что-то пошло не так при сохранении. Попробуй /start заново.")
+
 @dp.message(Command("addproduct"))
 async def add_product(message: types.Message):
     parts = message.text.split(maxsplit=2)
