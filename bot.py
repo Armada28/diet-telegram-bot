@@ -11,11 +11,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, Message
 
-# Настройка логгинга для отладки
+# Настройка логгинга
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Токен берём из переменных окружения
+# Токен из переменных окружения
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     logger.error("Переменная BOT_TOKEN не найдена в окружении!")
@@ -26,71 +26,19 @@ DB_NAME = "bju_bot.db"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# ─── ГРЕЧНЕВЫЙ МЕМ ─── (ставим высоко, чтобы срабатывал раньше общего обработчика текста)
-@dp.message(F.text)
-async def handle_food_input(message: types.Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state is not None:
-        return  # если регистрация — пропускаем
-
-    text = message.text.lower().strip()
-    
-    # Проверяем, выглядит ли сообщение как "продукт количество"
-    parts = text.split(maxsplit=1)
-    if len(parts) != 2:
-        return  # ← главное изменение: молчим, если не два слова
-
-    product, amount_str = parts
-    try:
-        amount = float(amount_str)
-    except ValueError:
-        return  # не число → молчим
-
-    # дальше как было — ищем продукт в базе и добавляем
-    try:
-        async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute(
-                "SELECT kcal FROM products WHERE product_name = ?", (product,)
-            ) as cursor:
-                row = await cursor.fetchone()
-                if not row:
-                    return  # продукта нет → молчим
-
-                kcal_per_100 = row[0]
-                total_kcal = (kcal_per_100 / 100) * amount
-
-                # проверка юзера
-                async with db.execute("SELECT id FROM users WHERE id = ?", (message.from_user.id,)) as cursor:
-                    if not await cursor.fetchone():
-                        await message.reply("Сначала /start")
-                        return
-
-                await db.execute(
-                    "UPDATE users SET eaten = eaten + ? WHERE id = ?",
-                    (total_kcal, message.from_user.id)
-                )
-                await db.commit()
-
-                await message.reply(f"Добавлено {total_kcal:.1f} ккал от {product} ({amount} г)")
-    except Exception as e:
-        logger.error(f"Ошибка добавления: {e}")
-        # можно даже без ответа, чтобы не спамил
-        # await message.reply("Ошибка, попробуй позже")
+# ─── ГРЕЧНЕВЫЙ МЕМ ─── (высоко, чтобы срабатывал раньше общего текста)
+@dp.message(F.text.lower().contains("греч"))
 async def греч_мем(message: Message):
     txt = message.text.lower()
     
-    # Проверяем, что это скорее всего про еду, а не про Грецию
-    food_keywords = ["съел", "сел", "скушал", "поел", "ем", "жру", "закинул", "грамм", "гр ", "кило", "порцию"]
+    food_keywords = ["съел", "сел", "скушал", "поел", "ем", "жру", "закинул", "грамм", "гр ", "кило", "порцию", "100", "200", "150"]
     
     if any(word in txt for word in food_keywords):
         await message.reply("Гречка level 100 активирован 🥣💪\nСколько уже кг сухой в тебя вошло?")
-    else:
-        # если про Грецию — лёгкий подкол
-        if any(word in txt for word in ["греция", "греческий", "афины", "олимп"]):
-            await message.reply("Эй, это не та гречка, брат 😭")
-        # иначе — молчим (можно убрать else целиком, если хочешь отвечать всегда)
+    elif any(word in txt for word in ["греция", "греческий", "афины", "олимп"]):
+        await message.reply("Эй, это не та гречка, брат 😭")
 
-# ─── СОСТОЯНИЯ (FSM) ───
+# ─── СОСТОЯНИЯ ───
 class Reg(StatesGroup):
     name = State()
     goal = State()
@@ -103,7 +51,7 @@ def main_kb():
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, one_time_keyboard=False)
 
-# ─── ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ───
+# ─── ИНИЦИАЛИЗАЦИЯ БД ───
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute('''
@@ -122,7 +70,7 @@ async def init_db():
         ''')
         await db.commit()
 
-# ─── ДОБАВЛЕНИЕ ДЕФОЛТНЫХ ПРОДУКТОВ ───
+# ─── ДЕФОЛТНЫЕ ПРОДУКТЫ ───
 async def add_default_products():
     products = [
         ("гречка", 313.0),
@@ -143,9 +91,9 @@ async def add_default_products():
                 (name.lower(), kcal)
             )
         await db.commit()
-    logger.info("Добавлены дефолтные продукты в базу")
+    logger.info("Добавлены дефолтные продукты")
 
-# ─── ОБРАБОТЧИКИ ───
+# ─── КОМАНДЫ ───
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
     try:
@@ -161,90 +109,31 @@ async def start(message: types.Message, state: FSMContext):
         logger.error(f"Ошибка в /start: {e}")
         await message.answer("Произошла ошибка. Попробуй позже.")
 
-@dp.message(Reg.name)
-async def reg_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text.strip())
-    await message.answer("Какая твоя дневная норма калорий? (например: 2200 или 1850.5)")
-    await state.set_state(Reg.goal)
-
-@dp.message(Reg.goal)
-async def reg_goal(message: types.Message, state: FSMContext):
+@dp.message(Command("addproduct"))
+async def add_product(message: types.Message):
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.reply("Формат: /addproduct продукт ккал\nПример: /addproduct яблоко 52")
+        return
+    product = parts[1].lower()
     try:
-        goal_text = message.text.replace(',', '.').strip()
-        goal = float(goal_text)
-        if goal <= 0:
-            raise ValueError("Норма калорий должна быть больше 0")
-        data = await state.get_data()
-        name = data.get('name', 'Пользователь')
+        kcal = float(parts[2].replace(',', '.'))
+    except ValueError:
+        await message.reply("Калории должны быть числом")
+        return
+    try:
         async with aiosqlite.connect(DB_NAME) as db:
             await db.execute(
-                "INSERT OR REPLACE INTO users (id, name, goal, eaten) VALUES (?, ?, ?, 0)",
-                (message.from_user.id, name, goal)
+                "INSERT OR REPLACE INTO products (product_name, kcal) VALUES (?, ?)",
+                (product, kcal)
             )
             await db.commit()
-        await message.answer(
-            f"Отлично, {name}! Цель {goal} ккал установлена.\n"
-            f"Теперь можешь пользоваться ботом 👌",
-            reply_markup=main_kb()
-        )
-        await state.clear()
-    except ValueError:
-        await message.answer("Пожалуйста, введи число (можно с точкой или запяткой).\nПример: 2100")
+        await message.reply(f"Продукт '{product}' добавлен с {kcal} ккал/100 г")
     except Exception as e:
-        logger.error(f"Ошибка в reg_goal: {e}")
-        await message.answer("Ошибка при регистрации. Попробуй заново.")
+        logger.error(f"Ошибка в add_product: {e}")
+        await message.reply("Ошибка при добавлении продукта.")
 
-# ─── ОБЩИЙ ОБРАБОТЧИК ДЛЯ ВВОДА ЕДЫ ─── (самый общий — ставим ниже специальных)
-@dp.message(F.text)
-async def handle_food_input(message: types.Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state is not None:
-        return  # Пропускаем, если человек в состоянии регистрации
-
-    text = message.text.lower().strip()
-    parts = text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.reply("Формат: продукт количество\nПример: гречка 100")
-        return
-
-    product = parts[0]
-    try:
-        amount = float(parts[1])
-    except ValueError:
-        await message.reply("Количество должно быть числом")
-        return
-
-    try:
-        async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute(
-                "SELECT kcal FROM products WHERE product_name = ?", (product,)
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    kcal_per_100 = row[0]
-                    total_kcal = (kcal_per_100 / 100) * amount
-
-                    # Проверяем наличие пользователя
-                    async with db.execute("SELECT id FROM users WHERE id = ?", (message.from_user.id,)) as cursor:
-                        user_exists = await cursor.fetchone()
-                        if not user_exists:
-                            await message.reply("Сначала зарегистрируйся через /start")
-                            return
-
-                    await db.execute(
-                        "UPDATE users SET eaten = eaten + ? WHERE id = ?",
-                        (total_kcal, message.from_user.id)
-                    )
-                    await db.commit()
-
-                    await message.reply(f"Добавлено {total_kcal:.1f} ккал от {product} ({amount} г)")
-                else:
-                    await message.reply(f"Продукт '{product}' не найден. Добавь: /addproduct {product} ккал")
-    except Exception as e:
-        logger.error(f"Ошибка в handle_food_input: {e}")
-        await message.reply("Ошибка при добавлении. Попробуй позже.")
-
-# ─── СТАТИСТИКА ───
+# ─── КНОПКИ ───
 @dp.message(F.text == "📊 Статистика")
 async def show_stats(message: types.Message):
     try:
@@ -261,7 +150,6 @@ async def show_stats(message: types.Message):
         logger.error(f"Ошибка в show_stats: {e}")
         await message.answer("Ошибка при получении статистики.")
 
-# ─── СБРОС ДНЯ ───
 @dp.message(F.text == "♻️ Сброс дня")
 async def reset_day(message: types.Message):
     try:
@@ -273,30 +161,60 @@ async def reset_day(message: types.Message):
         logger.error(f"Ошибка в reset_day: {e}")
         await message.answer("Ошибка при сбросе.")
 
-# ─── ДОБАВЛЕНИЕ ПРОДУКТА ───
-@dp.message(Command("addproduct"))
-async def add_product(message: types.Message):
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        await message.reply("Формат: /addproduct продукт ккал\nПример: /addproduct яблоко 52")
+@dp.message(F.text == "🍎 Быстрый перекус")
+async def quick_snack(message: types.Message):
+    await message.reply("Напиши что съел в формате: продукт количество\nПример: гречка 100")
+
+# ─── ВВОД ЕДЫ (только если два слова и второе — число) ───
+@dp.message(F.text)
+async def handle_food_input(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is not None:
         return
-    product = parts[1].lower()
+
+    text = message.text.lower().strip()
+    parts = text.split(maxsplit=1)
+
+    # Если не два слова → молчим
+    if len(parts) != 2:
+        return
+
+    product = parts[0]
+    amount_str = parts[1]
+
     try:
-        kcal = float(parts[2])
+        amount = float(amount_str.replace(',', '.'))
     except ValueError:
-        await message.reply("Калории должны быть числом")
-        return
+        return  # не число → молчим
+
     try:
         async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO products (product_name, kcal) VALUES (?, ?)",
-                (product, kcal)
-            )
-            await db.commit()
-        await message.reply(f"Продукт '{product}' добавлен с {kcal} ккал/100 г")
+            async with db.execute(
+                "SELECT kcal FROM products WHERE product_name = ?", (product,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return  # продукта нет → молчим
+
+                kcal_per_100 = row[0]
+                total_kcal = (kcal_per_100 / 100) * amount
+
+                # проверка пользователя
+                async with db.execute("SELECT id FROM users WHERE id = ?", (message.from_user.id,)) as cursor:
+                    if not await cursor.fetchone():
+                        await message.reply("Сначала /start")
+                        return
+
+                await db.execute(
+                    "UPDATE users SET eaten = eaten + ? WHERE id = ?",
+                    (total_kcal, message.from_user.id)
+                )
+                await db.commit()
+
+                await message.reply(f"Добавлено {total_kcal:.1f} ккал от {product} ({amount} г)")
     except Exception as e:
-        logger.error(f"Ошибка в add_product: {e}")
-        await message.reply("Ошибка при добавлении продукта.")
+        logger.error(f"Ошибка в handle_food_input: {e}")
+        # можно оставить без ответа, чтобы не спамил
 
 # ─── GRACEFUL SHUTDOWN ───
 async def shutdown():
