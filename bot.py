@@ -26,7 +26,7 @@ DB_NAME = "bju_bot.db"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# ─── ГРЕЧНЕВЫЙ МЕМ ─── (высоко, чтобы срабатывал раньше общего текста)
+# ─── ГРЕЧНЕВЫЙ МЕМ ───
 @dp.message(F.text.lower().contains("греч"))
 async def греч_мем(message: Message):
     txt = message.text.lower()
@@ -147,8 +147,8 @@ async def reg_goal(message: types.Message, state: FSMContext):
         
         await message.answer(
             f"Готово, {name}! Твоя цель — {goal} ккал в день.\n"
-            "Теперь можешь добавлять еду в формате: продукт количество\n"
-            "Пример: гречка 100",
+            "Теперь можешь добавлять еду в формате: продукт количество [продукт количество ...]\n"
+            "Пример: гречка 100 курица 200 рис 150",
             reply_markup=main_kb()
         )
         await state.clear()
@@ -211,9 +211,9 @@ async def reset_day(message: types.Message):
 
 @dp.message(F.text == "🍎 Быстрый перекус")
 async def quick_snack(message: types.Message):
-    await message.reply("Напиши что съел в формате: продукт количество\nПример: гречка 100")
+    await message.reply("Напиши что съел в формате: продукт количество [продукт количество ...]\nПример: гречка 100 курица 200")
 
-# ─── ВВОД ЕДЫ (только если два слова и второе — число) ───
+# ─── ВВОД ЕДЫ (поддержка нескольких продуктов в одном сообщении) ───
 @dp.message(F.text)
 async def handle_food_input(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
@@ -221,48 +221,61 @@ async def handle_food_input(message: types.Message, state: FSMContext):
         return
 
     text = message.text.lower().strip()
-    parts = text.split(maxsplit=1)
+    words = text.split()
 
-    # Если не два слова → молчим
-    if len(parts) != 2:
-        return
+    if len(words) < 2 or len(words) % 2 != 0:
+        return  # молчим, если не пары "продукт количество"
 
-    product = parts[0]
-    amount_str = parts[1]
-
-    try:
-        amount = float(amount_str.replace(',', '.'))
-    except ValueError:
-        return  # не число → молчим
+    added_items = []
+    total_added_kcal = 0.0
 
     try:
         async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute(
-                "SELECT kcal FROM products WHERE product_name = ?", (product,)
-            ) as cursor:
-                row = await cursor.fetchone()
-                if not row:
-                    return  # продукта нет → молчим
+            # проверяем существование пользователя один раз
+            async with db.execute("SELECT id FROM users WHERE id = ?", (message.from_user.id,)) as cursor:
+                if not await cursor.fetchone():
+                    await message.reply("Сначала /start")
+                    return
 
-                kcal_per_100 = row[0]
-                total_kcal = (kcal_per_100 / 100) * amount
+            i = 0
+            while i < len(words) - 1:
+                product = words[i]
+                amount_str = words[i + 1]
 
-                # проверка пользователя
-                async with db.execute("SELECT id FROM users WHERE id = ?", (message.from_user.id,)) as cursor:
-                    if not await cursor.fetchone():
-                        await message.reply("Сначала /start")
-                        return
+                try:
+                    amount = float(amount_str.replace(',', '.'))
+                except ValueError:
+                    i += 1
+                    continue
 
-                await db.execute(
-                    "UPDATE users SET eaten = eaten + ? WHERE id = ?",
-                    (total_kcal, message.from_user.id)
-                )
+                async with db.execute(
+                    "SELECT kcal FROM products WHERE product_name = ?", (product,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    if row:
+                        kcal_per_100 = row[0]
+                        kcal_added = (kcal_per_100 / 100) * amount
+                        total_added_kcal += kcal_added
+
+                        await db.execute(
+                            "UPDATE users SET eaten = eaten + ? WHERE id = ?",
+                            (kcal_added, message.from_user.id)
+                        )
+
+                        added_items.append(f"{product.capitalize()} {amount} г → {kcal_added:.1f} ккал")
+
+                i += 2
+
+            if added_items:
                 await db.commit()
 
-                await message.reply(f"Добавлено {total_kcal:.1f} ккал от {product} ({amount} г)")
+                response = "Добавлено:\n" + "\n".join(added_items)
+                if len(added_items) > 1:
+                    response += f"\n\nИтого: +{total_added_kcal:.1f} ккал"
+                await message.reply(response)
+
     except Exception as e:
-        logger.error(f"Ошибка в handle_food_input: {e}")
-        # можно оставить без ответа, чтобы не спамил
+        logger.error(f"Ошибка при добавлении продуктов: {e}")
 
 # ─── GRACEFUL SHUTDOWN ───
 async def shutdown():
@@ -280,6 +293,11 @@ async def main():
     logger.info("Бот запускается...")
     await init_db()
     await add_default_products()
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
