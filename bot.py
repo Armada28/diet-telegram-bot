@@ -27,7 +27,55 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # ─── ГРЕЧНЕВЫЙ МЕМ ─── (ставим высоко, чтобы срабатывал раньше общего обработчика текста)
-@dp.message(F.text.lower().contains("греч"))
+@dp.message(F.text)
+async def handle_food_input(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is not None:
+        return  # если регистрация — пропускаем
+
+    text = message.text.lower().strip()
+    
+    # Проверяем, выглядит ли сообщение как "продукт количество"
+    parts = text.split(maxsplit=1)
+    if len(parts) != 2:
+        return  # ← главное изменение: молчим, если не два слова
+
+    product, amount_str = parts
+    try:
+        amount = float(amount_str)
+    except ValueError:
+        return  # не число → молчим
+
+    # дальше как было — ищем продукт в базе и добавляем
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            async with db.execute(
+                "SELECT kcal FROM products WHERE product_name = ?", (product,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return  # продукта нет → молчим
+
+                kcal_per_100 = row[0]
+                total_kcal = (kcal_per_100 / 100) * amount
+
+                # проверка юзера
+                async with db.execute("SELECT id FROM users WHERE id = ?", (message.from_user.id,)) as cursor:
+                    if not await cursor.fetchone():
+                        await message.reply("Сначала /start")
+                        return
+
+                await db.execute(
+                    "UPDATE users SET eaten = eaten + ? WHERE id = ?",
+                    (total_kcal, message.from_user.id)
+                )
+                await db.commit()
+
+                await message.reply(f"Добавлено {total_kcal:.1f} ккал от {product} ({amount} г)")
+    except Exception as e:
+        logger.error(f"Ошибка добавления: {e}")
+        # можно даже без ответа, чтобы не спамил
+        # await message.reply("Ошибка, попробуй позже")
 async def греч_мем(message: Message):
     txt = message.text.lower()
     
